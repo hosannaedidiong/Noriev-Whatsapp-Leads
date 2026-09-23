@@ -1,65 +1,74 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+// @vercel/postgres is in maintenance mode (Vercel's Postgres storage is now
+// Neon under the hood) but still reads POSTGRES_URL for compatibility. If it
+// stops working, switch to @neondatabase/serverless's neon() against the
+// same env var.
+import { sql } from "@vercel/postgres";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, "..", "data");
-fs.mkdirSync(DATA_DIR, { recursive: true });
+// Serverless functions get a fresh module scope per cold start, so this just
+// avoids redundant CREATE TABLE calls within one warm instance, not globally.
+let schemaReady;
+function ensureSchema() {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS sessions (
+          wa_id TEXT PRIMARY KEY,
+          state TEXT NOT NULL,
+          lead_json JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`
+        CREATE TABLE IF NOT EXISTS leads (
+          id SERIAL PRIMARY KEY,
+          wa_id TEXT NOT NULL,
+          name TEXT,
+          intent TEXT,
+          property_type TEXT,
+          location TEXT,
+          budget TEXT,
+          timeline TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+    })();
+  }
+  return schemaReady;
+}
 
-export function openStore(dbPath = path.join(DATA_DIR, "leads.db")) {
-  const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      wa_id TEXT PRIMARY KEY,
-      state TEXT NOT NULL,
-      lead_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS leads (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wa_id TEXT NOT NULL,
-      name TEXT,
-      intent TEXT,
-      property_type TEXT,
-      location TEXT,
-      budget TEXT,
-      timeline TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-
+export function openStore() {
   return {
-    getSession(waId) {
-      const row = db.prepare("SELECT state, lead_json FROM sessions WHERE wa_id = ?").get(waId);
-      if (!row) return null;
-      return { state: row.state, lead: JSON.parse(row.lead_json) };
+    async getSession(waId) {
+      await ensureSchema();
+      const { rows } = await sql`SELECT state, lead_json FROM sessions WHERE wa_id = ${waId}`;
+      if (rows.length === 0) return null;
+      return { state: rows[0].state, lead: rows[0].lead_json };
     },
 
-    saveSession(waId, session) {
-      db.prepare(
-        `INSERT INTO sessions (wa_id, state, lead_json, updated_at)
-         VALUES (?, ?, ?, datetime('now'))
-         ON CONFLICT(wa_id) DO UPDATE SET state = excluded.state, lead_json = excluded.lead_json, updated_at = excluded.updated_at`
-      ).run(waId, session.state, JSON.stringify(session.lead));
+    async saveSession(waId, session) {
+      await ensureSchema();
+      await sql`
+        INSERT INTO sessions (wa_id, state, lead_json, updated_at)
+        VALUES (${waId}, ${session.state}, ${JSON.stringify(session.lead)}::jsonb, now())
+        ON CONFLICT (wa_id) DO UPDATE SET
+          state = EXCLUDED.state,
+          lead_json = EXCLUDED.lead_json,
+          updated_at = EXCLUDED.updated_at
+      `;
     },
 
-    saveLead(waId, lead) {
-      db.prepare(
-        `INSERT INTO leads (wa_id, name, intent, property_type, location, budget, timeline, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
-      ).run(waId, lead.name, lead.intent, lead.propertyType, lead.location, lead.budget, lead.timeline);
+    async saveLead(waId, lead) {
+      await ensureSchema();
+      await sql`
+        INSERT INTO leads (wa_id, name, intent, property_type, location, budget, timeline)
+        VALUES (${waId}, ${lead.name}, ${lead.intent}, ${lead.propertyType}, ${lead.location}, ${lead.budget}, ${lead.timeline})
+      `;
     },
 
-    listLeads() {
-      return db.prepare("SELECT * FROM leads ORDER BY id DESC").all();
-    },
-
-    close() {
-      db.close();
+    async listLeads() {
+      await ensureSchema();
+      const { rows } = await sql`SELECT * FROM leads ORDER BY id DESC`;
+      return rows;
     },
   };
 }
