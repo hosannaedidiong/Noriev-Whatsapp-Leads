@@ -1,0 +1,19 @@
+{
+  "name": "noriev-whatsapp-leads",
+  "version": "0.1.0",
+  "description": "WhatsApp Cloud API lead-capture prototype for Noriev Properties",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
